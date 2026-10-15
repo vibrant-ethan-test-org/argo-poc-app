@@ -26,7 +26,7 @@ body{margin:0;font-family:system-ui,sans-serif;background:hsl({{.Hue}},60%,92%);
 main{max-width:560px;margin:12vh auto;padding:32px;background:#fff;border-radius:12px;border-top:10px solid hsl({{.Hue}},65%,45%)}
 h1{margin:0 0 8px}dt{color:#667;font-size:13px}dd{margin:0 0 12px;font-family:ui-monospace,monospace}
 </style></head>
-<body><main data-testid="argo-poc-v2">
+<body><main data-testid="argo-poc">
 <h1>argo-poc {{.Version}}</h1>
 <dl>
 <dt>Environment</dt><dd>{{.Env}}</dd>
