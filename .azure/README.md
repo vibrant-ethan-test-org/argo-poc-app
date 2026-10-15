@@ -37,6 +37,23 @@ All holds are checks on an environment: Pipelines → Environments → `argo-poc
 
 Holds also show on the run page as "Waiting: 1 check pending", and approvers get an email.
 
+## Emergency release (skip test)
+
+Run pipeline → pick the branch → tick **Emergency** → Run.
+
+```
+Build ─▶ Emergency sign-off (argo-poc-emergency) ─▶ Prod (argo-poc-prod)
+          Approvals check, always on                  guard, start, e2e, switch
+```
+
+- No test deploy and no soak. Prod still runs e2e against the new version before switching.
+- Someone on the **Emergency sign-off** check must Approve. The run is tagged `emergency`, gets a warning naming
+  who started it, and shows up under Environments → `argo-poc-emergency` → Deployments (the audit log).
+- If **Prod hold** is on, the run also needs that approval: approving it is the freeze override.
+- The next normal release goes through test as usual. Test still has the older build until then.
+- For real use, set "Approvers can't approve their own runs" on the sign-off check and add a Branch control check
+  (for example only `main` and `hotfix/*`). In this PoC the sign-off approver is the only user, so self-approval is allowed.
+
 ## Trying it without breaking code
 
 Run pipeline → branch or `main` → tick **Simulate a broken release** to make e2e fail in test. **Soak time**
@@ -48,3 +65,4 @@ changes the wait before prod. Manual runs deploy from any branch; automatic runs
 - `demo Build Service (ethanliu0087)` has Reader on `argo-poc-prod`, so the guard can read its deployments.
 - `argo-poc-prod` checks: Exclusive lock (on), Prod hold (Approvals, disabled until needed).
 - `argo-poc-test` checks: Test hold (Approvals, disabled until needed).
+- `argo-poc-emergency` checks: Emergency sign-off (Approvals, always on, 24h timeout).
