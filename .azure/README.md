@@ -15,8 +15,13 @@ push to main ─▶ Build ─▶ Test (argo-poc-test) ─▶ soak 1m ─▶ Prod
 | Freight (one build) | Build stage saves both images as the `images` artifact; test and prod load that same artifact |
 | Blue-green + e2e gate | `.azure/deploy-steps.yml`: start new version, e2e against it, then "switch traffic" (simulated). e2e failing fails the stage and prod never runs |
 | Auto-promote with 1m soak | `Prod` depends on `Test`; `Delay` at the end of `Test` (server job, no agent held) |
-| Newest Freight wins | Exclusive lock check on `argo-poc-prod` + `lockBehavior: runLatest`: older runs waiting for prod are cancelled |
+| Newest Freight wins | Exclusive lock check on `argo-poc-prod` (one deploy at a time) + the `guard` job: a run whose build is older than what prod runs skips its deploy with a warning |
+| Promote an older Freight (rollback) | Open that run → Prod stage → **Rerun stage**. A re-run skips the guard |
 | What is where | Pipelines → Environments → `argo-poc-test` / `argo-poc-prod` → Deployments; each run's summary links the app commit |
+
+`lockBehavior: runLatest` alone is not enough: it only cancels older runs already waiting when a newer one asks for
+the lock. When two held runs were approved together, the newer deployed first and the older then deployed over it.
+The guard fixed that.
 
 ## Blocking promotion
 
@@ -27,7 +32,7 @@ All holds are checks on an environment: Pipelines → Environments → `argo-poc
 |---|---|---|
 | Hold every release at prod (freeze) | Enable the **Prod hold** check (⋮ → Enable). New runs stop before prod and wait up to 30 days | Disable the check. Runs started after that go straight through; runs already waiting still need **Approve** |
 | Release one held build anyway | On the waiting run: **Review** → **Approve** | — |
-| Block one release for good | On the waiting run: **Review** → **Reject**. Prod is skipped for that run | Re-run the Prod stage |
+| Block one release | On the waiting run: **Review** → **Reject**. Its Prod stage fails | Re-run the Prod stage (checks run again) |
 | Keep a build in test | Enable the **Test hold** check on `argo-poc-test`. Newer runs wait before test, so test keeps the build it has | Disable it, and Approve or Reject waiting runs |
 
 Holds also show on the run page as "Waiting: 1 check pending", and approvers get an email.
@@ -40,5 +45,6 @@ changes the wait before prod. Manual runs deploy from any branch; automatic runs
 ## One-time setup (already done)
 
 - Environments `argo-poc-test` and `argo-poc-prod`, with pipeline 1 allowed to use them.
+- `demo Build Service (ethanliu0087)` has Reader on `argo-poc-prod`, so the guard can read its deployments.
 - `argo-poc-prod` checks: Exclusive lock (on), Prod hold (Approvals, disabled until needed).
 - `argo-poc-test` checks: Test hold (Approvals, disabled until needed).
