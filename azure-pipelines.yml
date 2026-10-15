@@ -1,19 +1,102 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
+# Azure Pipelines version of the Kargo flow: build once, deploy to test, soak, auto-promote to prod.
+# There is no cluster, so a "deploy" runs the image on the build agent and gates it with the real e2e image.
+# Holds live on the Azure DevOps environments argo-poc-test and argo-poc-prod (Pipelines → Environments → Approvals and checks);
+# see .azure/README.md.
+name: v1.0.$(Rev:r)
 
 trigger:
-- main
+  branches:
+    include: [main]
+  paths:
+    exclude: ['**/*.md']
+
+pr: none
+
+parameters:
+  - name: failTestE2E
+    displayName: Simulate a broken release (e2e fails in test)
+    type: boolean
+    default: false
+  - name: soakMinutes
+    displayName: Soak time in test before prod (minutes)
+    type: number
+    default: 1
+
+variables:
+  - name: appImage
+    value: argo-poc-app:$(Build.BuildNumber)
+  - name: e2eImage
+    value: argo-poc-e2e:$(Build.BuildNumber)
+  # Deploy from main, or from any branch when someone starts the run by hand.
+  - name: canDeploy
+    value: $[or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.Reason'], 'Manual'))]
 
 pool:
   vmImage: ubuntu-latest
 
-steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+stages:
+  - stage: Build
+    jobs:
+      - job: images
+        displayName: Build images
+        steps:
+          - script: |
+              set -euo pipefail
+              docker build -t $(appImage) --build-arg VERSION=$(Build.BuildNumber) --build-arg COMMIT=$(Build.SourceVersion) .
+              docker build -t $(e2eImage) e2e
+              mkdir -p $(Build.ArtifactStagingDirectory)/images
+              docker save -o $(Build.ArtifactStagingDirectory)/images/images.tar $(appImage) $(e2eImage)
+            displayName: Build app and e2e images
+            env:
+              DOCKER_BUILDKIT: '1'
+          - publish: $(Build.ArtifactStagingDirectory)/images
+            artifact: images
+            displayName: Publish images (the same build goes to test and prod)
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+  - stage: Test
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables.canDeploy, 'true'))
+    variables:
+      ${{ if parameters.failTestE2E }}:
+        expectedSha: simulated-bad-commit
+      ${{ else }}:
+        expectedSha: $(Build.SourceVersion)
+    jobs:
+      - deployment: deploy
+        displayName: Deploy to test
+        environment: argo-poc-test
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: .azure/deploy-steps.yml
+                  parameters:
+                    env: test
+                    expectedSha: $(expectedSha)
+      - job: soak
+        displayName: Soak in test
+        dependsOn: deploy
+        pool: server
+        steps:
+          - task: Delay@1
+            displayName: Wait ${{ parameters.soakMinutes }} minute(s) before prod
+            inputs:
+              delayForMinutes: '${{ parameters.soakMinutes }}'
+
+  - stage: Prod
+    dependsOn: Test
+    condition: and(succeeded(), eq(variables.canDeploy, 'true'))
+    # With an Exclusive lock check on argo-poc-prod, a newer run waiting for prod cancels older waiting runs.
+    lockBehavior: runLatest
+    jobs:
+      - deployment: deploy
+        displayName: Deploy to prod
+        environment: argo-poc-prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: .azure/deploy-steps.yml
+                  parameters:
+                    env: prod
+                    expectedSha: $(Build.SourceVersion)
