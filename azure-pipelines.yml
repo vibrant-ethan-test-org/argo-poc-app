@@ -45,9 +45,9 @@ variables:
   - name: windowDays
     value: Mon,Tue,Wed,Thu,Fri
   - name: windowStart
-    value: '09:00'
+    value: '17:35'
   - name: windowEnd
-    value: '17:00'
+    value: '23:00'
 
 pool:
   vmImage: ubuntu-latest
