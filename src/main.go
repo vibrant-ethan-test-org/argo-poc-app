@@ -1,6 +1,6 @@
 // Command argo-poc-app is a tiny web service used to demo Argo CD + Argo Rollouts.
 // Each release shows its version, commit and a color derived from the version,
-// so blue/green switches are easy to see.
+// so blue/green switches are easy to see. The page marker below is what e2e checks.
 package main
 
 import (
