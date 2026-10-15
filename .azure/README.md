@@ -34,8 +34,21 @@ All holds are checks on an environment: Pipelines → Environments → `argo-poc
 | Release one held build anyway | On the waiting run: **Review** → **Approve** | — |
 | Block one release | On the waiting run: **Review** → **Reject**. Its Prod stage fails | Re-run the Prod stage (checks run again) |
 | Keep a build in test | Enable the **Test hold** check on `argo-poc-test`. Newer runs wait before test, so test keeps the build it has | Disable it, and Approve or Reject waiting runs |
+| Deploy to prod only in business hours | **Business Hours** check on `argo-poc-prod` (Mon–Fri 09:00–17:00). Outside the window a run waits, and passes on its own once the window opens (the check re-evaluates every few minutes) | — |
+| Deploy one run outside business hours | On the waiting run: open the Prod stage's checks → **Bypass** on the Business Hours check. Only administrators of `argo-poc-prod` can bypass, and the panel records who did. Other waiting runs keep waiting | — |
 
 Holds also show on the run page as "Waiting: 1 check pending", and approvers get an email.
+
+A running check keeps the settings it started with: editing a check (hours, timeout) only affects runs that reach
+prod afterwards. Set the Business Hours timeout longer than the longest closed period (Friday 17:00 to Monday 09:00
+is 64 hours), or runs that arrive on Friday evening fail before Monday.
+
+### When several runs are waiting for prod
+
+Every waiting run passes its checks independently (approved, or the window opened). They then deploy one at a time
+(Exclusive lock), and the guard skips any run older than what prod already runs. So prod always ends on the newest
+build, and approving an old run after a newer one deployed does nothing (the old run logs a warning and doesn't
+deploy). To deploy an older build on purpose, re-run its Prod stage.
 
 ## Emergency release (skip test)
 
@@ -50,6 +63,7 @@ Build ─▶ Emergency sign-off (argo-poc-prod-emergency) ─▶ Prod (argo-poc-
 - Someone on the **Emergency sign-off** check must Approve. The run is tagged `emergency`, gets a warning naming
   who started it, and shows up under Environments → `argo-poc-prod-emergency` → Deployments (the audit log).
 - If **Prod hold** is on, the run also needs that approval: approving it is the freeze override.
+- Outside business hours, an administrator also has to **Bypass** the Business Hours check on that run.
 - The next normal release goes through test as usual. Test still has the older build until then.
 - For real use, set "Approvers can't approve their own runs" on the sign-off check and add a Branch control check
   (for example only `main` and `hotfix/*`). In this PoC the sign-off approver is the only user, so self-approval is allowed.
@@ -63,6 +77,6 @@ changes the wait before prod. Manual runs deploy from any branch; automatic runs
 
 - Environments `argo-poc-test` and `argo-poc-prod`, with pipeline 1 allowed to use them.
 - `demo Build Service (ethanliu0087)` has Reader on `argo-poc-prod`, so the guard can read its deployments.
-- `argo-poc-prod` checks: Exclusive lock (on), Prod hold (Approvals, disabled until needed).
+- `argo-poc-prod` checks: Exclusive lock (on), Prod hold (Approvals, disabled until needed), Business Hours.
 - `argo-poc-test` checks: Test hold (Approvals, disabled until needed).
 - `argo-poc-prod-emergency` checks: Emergency sign-off (Approvals, always on, 24h timeout).
