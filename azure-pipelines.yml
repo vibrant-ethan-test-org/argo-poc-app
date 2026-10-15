@@ -138,16 +138,20 @@ stages:
                 WINDOW_DAYS: $(windowDays)
                 WINDOW_START: $(windowStart)
                 WINDOW_END: $(windowEnd)
-        # Times out (and resumes) when the window opens. Resume deploys this run now; Reject blocks it.
+        # The validation times out (and resumes) when the window opens. Resume deploys this run now; Reject blocks it.
+        # onTimeout only applies to the task's own timeout; a job timeout would fail the run, so the job gets 7 days.
         - job: wait
           displayName: Wait for business hours
           dependsOn: check
           condition: eq(dependencies.check.outputs['window.open'], 'false')
           pool: server
-          timeoutInMinutes: $[ dependencies.check.outputs['window.waitMinutes'] ]
+          timeoutInMinutes: 10080
+          variables:
+            waitMinutes: $[ dependencies.check.outputs['window.waitMinutes'] ]
           steps:
             - task: ManualValidation@1
               displayName: Outside business hours. Resume to deploy this run now
+              timeoutInMinutes: $(waitMinutes)
               inputs:
                 notifyUsers: ethan.liu@vibrantsci.com
                 approvers: ethan.liu@vibrantsci.com
