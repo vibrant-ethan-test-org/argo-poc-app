@@ -1,19 +1,159 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
+# Azure Pipelines version of the Kargo flow: build once, deploy to test, soak, auto-promote to prod.
+# There is no cluster, so a "deploy" runs the image on the build agent and gates it with the real e2e image.
+# Holds live on the Azure DevOps environments argo-poc-test and argo-poc-prod (Pipelines → Environments → Approvals and checks);
+# see .azure/README.md. The emergency parameter skips test and the soak, with a sign-off on argo-poc-prod-emergency.
+name: v1.0.$(Rev:r)
 
 trigger:
-- main
+  branches:
+    include: [main]
+  paths:
+    exclude: ['**/*.md']
+
+pr: none
+
+parameters:
+  - name: failTestE2E
+    displayName: Simulate a broken release (e2e fails in test)
+    type: boolean
+    default: false
+  - name: soakMinutes
+    displayName: Soak time in test before prod (minutes)
+    type: number
+    default: 1
+  - name: emergency
+    displayName: "Emergency: skip test and soak, deploy straight to prod (needs sign-off)"
+    type: boolean
+    default: false
+
+variables:
+  - name: appImage
+    value: argo-poc-app:$(Build.BuildNumber)
+  - name: e2eImage
+    value: argo-poc-e2e:$(Build.BuildNumber)
+  # Deploy from main, or from any branch when someone starts the run by hand.
+  - name: canDeploy
+    value: $[or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.Reason'], 'Manual'))]
 
 pool:
   vmImage: ubuntu-latest
 
-steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+stages:
+  - stage: Build
+    jobs:
+      - job: images
+        displayName: Build images
+        steps:
+          - script: |
+              set -euo pipefail
+              docker build -t $(appImage) --build-arg VERSION=$(Build.BuildNumber) --build-arg COMMIT=$(Build.SourceVersion) .
+              docker build -t $(e2eImage) e2e
+              mkdir -p $(Build.ArtifactStagingDirectory)/images
+              docker save -o $(Build.ArtifactStagingDirectory)/images/images.tar $(appImage) $(e2eImage)
+            displayName: Build app and e2e images
+            env:
+              DOCKER_BUILDKIT: '1'
+          - publish: $(Build.ArtifactStagingDirectory)/images
+            artifact: images
+            displayName: Publish images (the same build goes to test and prod)
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+  - ${{ if not(parameters.emergency) }}:
+    - stage: Test
+      dependsOn: Build
+      condition: and(succeeded(), eq(variables.canDeploy, 'true'))
+      variables:
+        ${{ if parameters.failTestE2E }}:
+          expectedSha: simulated-bad-commit
+        ${{ else }}:
+          expectedSha: $(Build.SourceVersion)
+      jobs:
+        - deployment: deploy
+          displayName: Deploy to test
+          environment: argo-poc-test
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - template: .azure/deploy-steps.yml
+                    parameters:
+                      env: test
+                      expectedSha: $(expectedSha)
+        - job: soak
+          displayName: Soak in test
+          dependsOn: deploy
+          pool: server
+          steps:
+            - task: Delay@1
+              displayName: Wait ${{ parameters.soakMinutes }} minute(s) before prod
+              inputs:
+                delayForMinutes: '${{ parameters.soakMinutes }}'
+
+  # Emergency path: no test deploy and no soak, but a person must sign off on argo-poc-prod-emergency (always-on Approvals check),
+  # and prod still runs e2e against the new version before switching. That environment's history lists every emergency release.
+  - ${{ if parameters.emergency }}:
+    - stage: Emergency
+      displayName: Emergency sign-off
+      dependsOn: Build
+      condition: and(succeeded(), eq(variables.canDeploy, 'true'))
+      jobs:
+        - deployment: signoff
+          displayName: Sign-off to skip test
+          environment: argo-poc-prod-emergency
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - download: none
+                  - script: |
+                      echo "##vso[build.addbuildtag]emergency"
+                      echo "##vso[task.logissue type=warning]Emergency release: $(Build.BuildNumber) skips test and goes straight to prod. Started by $(Build.RequestedFor)."
+                    displayName: Record emergency release
+
+  - stage: Prod
+    ${{ if parameters.emergency }}:
+      dependsOn: Emergency
+    ${{ else }}:
+      dependsOn: Test
+    condition: and(succeeded(), eq(variables.canDeploy, 'true'))
+    # With an Exclusive lock check on argo-poc-prod, a newer run waiting for prod cancels older waiting runs.
+    lockBehavior: runLatest
+    jobs:
+      # The lock only cancels older runs that are already waiting when a newer one asks for it, so an older run
+      # can still get the lock after a newer one deployed. Skip it then; re-running the stage by hand still deploys (rollback).
+      - job: guard
+        displayName: Check prod has no newer build
+        steps:
+          - checkout: none
+          - script: |
+              set -euo pipefail
+              api="$(System.CollectionUri)$(System.TeamProject)/_apis/distributedtask/environments"
+              auth="Authorization: Bearer $SYSTEM_ACCESSTOKEN"
+              env_id=$(curl -fsS -H "$auth" "$api?name=argo-poc-prod&api-version=7.1" | jq -r '.value[0].id')
+              # The latest successful deployment record is what prod runs now (a rollback can make it an older run).
+              current=$(curl -fsS -H "$auth" "$api/$env_id/environmentdeploymentrecords?top=50&api-version=7.1" \
+                | jq -r '[.value[] | select(.result == "succeeded")] | max_by(.id) // {} | .owner // {} | "\(.id // 0) \(.name // "none")"')
+              read -r current_id current_name <<<"$current"
+              echo "Prod runs: $current_name (run $current_id); this run: $(Build.BuildNumber) (run $(Build.BuildId)), stage attempt $(System.StageAttempt)"
+              skip=false
+              if [ "$current_id" -gt "$(Build.BuildId)" ] && [ "$(System.StageAttempt)" = 1 ]; then
+                skip=true
+                echo "##vso[task.logissue type=warning]Prod already runs newer build $current_name, so $(Build.BuildNumber) is not deployed. Re-run the Prod stage to deploy it anyway."
+              fi
+              echo "##vso[task.setvariable variable=skip;isOutput=true]$skip"
+            name: newer
+            displayName: Compare with the newest build in prod
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      - deployment: deploy
+        displayName: Deploy to prod
+        dependsOn: guard
+        condition: and(succeeded(), ne(dependencies.guard.outputs['newer.skip'], 'true'))
+        environment: argo-poc-prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: .azure/deploy-steps.yml
+                  parameters:
+                    env: prod
+                    expectedSha: $(Build.SourceVersion)
