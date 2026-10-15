@@ -1,0 +1,90 @@
+# Builds the app and e2e images, pushes them to GHCR, then deploys to test
+# by committing the new tag to the gitops repo. Argo CD does the actual deploy.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-main
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/vibrant-ethan-test-org
+  VERSION: v0.1.${{ github.run_number }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - { image: argo-poc-app, context: ., file: Dockerfile }
+          - { image: argo-poc-e2e, context: e2e, file: e2e/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ matrix.image }}:${{ env.VERSION }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            COMMIT=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+
+  deploy-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check token
+        env:
+          POC_PAT: ${{ secrets.POC_PAT }}
+        run: |
+          if [ -z "$POC_PAT" ]; then
+            echo "::error::Secret POC_PAT is not set. It needs Contents write on argo-poc-gitops."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: vibrant-ethan-test-org/argo-poc-gitops
+          token: ${{ secrets.POC_PAT }}
+      - name: Install kustomize if missing
+        run: |
+          command -v kustomize || {
+            curl -sfL https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh | bash -s 5.8.0 /usr/local/bin
+          }
+      - name: Set test image tags
+        working-directory: apps/argo-poc/overlays/test
+        run: |
+          kustomize edit set image \
+            "$REGISTRY/argo-poc-app:$VERSION" \
+            "$REGISTRY/argo-poc-e2e:$VERSION"
+          kustomize edit add annotation "argo-poc/app-sha:$GITHUB_SHA" --force
+      - name: Commit and push to gitops
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "test: argo-poc-app $VERSION ($GITHUB_REPOSITORY@$GITHUB_SHA)"
+          for attempt in 1 2 3; do
+            git pull --rebase && git push && exit 0
+            sleep 5
+          done
+          exit 1
