@@ -33,7 +33,7 @@ h1{margin:0 0 8px}dt{color:#667;font-size:13px}dd{margin:0 0 12px;font-family:ui
 <dt>Commit</dt><dd>{{.Commit}}</dd>
 <dt>Pod</dt><dd>{{.Pod}}</dd>
 </dl>
-<p style="color:#667;font-size:13px">Deployed by Argo CD from a management cluster, released blue-green by Argo Rollouts.</p>
+<p style="color:#667;font-size:13px">Promoted by Kargo, deployed by Argo CD from a management cluster, released blue-green by Argo Rollouts.</p>
 </main></body></html>`))
 
 func hue(s string) uint32 {
