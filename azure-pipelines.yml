@@ -25,10 +25,6 @@ parameters:
     displayName: "Emergency: skip test and soak, deploy straight to prod (needs sign-off)"
     type: boolean
     default: false
-  - name: ignoreBusinessHours
-    displayName: Deploy to prod outside business hours
-    type: boolean
-    default: false
 
 variables:
   - name: appImage
@@ -38,16 +34,6 @@ variables:
   # Deploy from main, or from any branch when someone starts the run by hand.
   - name: canDeploy
     value: $[or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.Reason'], 'Manual'))]
-  # Prod deploy window. Outside it, a run waits at the Business hours stage until the window opens,
-  # unless someone clicks Resume on that run (or starts it with "Deploy to prod outside business hours").
-  - name: windowTimeZone
-    value: America/New_York
-  - name: windowDays
-    value: Mon,Tue,Wed,Thu,Fri
-  - name: windowStart
-    value: '09:00'
-  - name: windowEnd
-    value: '17:00'
 
 pool:
   vmImage: ubuntu-latest
@@ -102,62 +88,6 @@ stages:
               inputs:
                 delayForMinutes: '${{ parameters.soakMinutes }}'
 
-  - ${{ if and(not(parameters.emergency), not(parameters.ignoreBusinessHours)) }}:
-    - stage: Window
-      displayName: Business hours
-      dependsOn: Test
-      condition: and(succeeded(), eq(variables.canDeploy, 'true'))
-      jobs:
-        - job: check
-          displayName: Check the prod deploy window
-          steps:
-            - checkout: none
-            - script: |
-                python3 - <<'EOF'
-                import datetime as dt, math, os, zoneinfo
-                tz = zoneinfo.ZoneInfo(os.environ["WINDOW_TZ"])
-                days = os.environ["WINDOW_DAYS"].split(",")
-                start, end = dt.time.fromisoformat(os.environ["WINDOW_START"]), dt.time.fromisoformat(os.environ["WINDOW_END"])
-                now = dt.datetime.now(tz)
-                wait = 0
-                if not (now.strftime("%a") in days and start <= now.time() < end):
-                    opens = next(o for i in range(8)
-                                 for o in [dt.datetime.combine(now.date() + dt.timedelta(days=i), start, tz)]
-                                 if o > now and o.strftime("%a") in days)
-                    wait = math.ceil((opens - now).total_seconds() / 60)
-                    print(f"Outside the prod window ({','.join(days)} {start:%H:%M}-{end:%H:%M} {tz}). Now {now:%a %H:%M}; opens {opens:%a %H:%M}, in {wait} min.")
-                else:
-                    print(f"Inside the prod window. Now {now:%a %H:%M} {tz}.")
-                print(f"##vso[task.setvariable variable=open;isOutput=true]{'true' if wait == 0 else 'false'}")
-                print(f"##vso[task.setvariable variable=waitMinutes;isOutput=true]{wait}")
-                EOF
-              name: window
-              displayName: Is prod open now?
-              env:
-                WINDOW_TZ: $(windowTimeZone)
-                WINDOW_DAYS: $(windowDays)
-                WINDOW_START: $(windowStart)
-                WINDOW_END: $(windowEnd)
-        # The validation times out (and resumes) when the window opens. Resume deploys this run now; Reject blocks it.
-        # onTimeout only applies to the task's own timeout; a job timeout would fail the run, so the job gets 7 days.
-        - job: wait
-          displayName: Wait for business hours
-          dependsOn: check
-          condition: eq(dependencies.check.outputs['window.open'], 'false')
-          pool: server
-          timeoutInMinutes: 10080
-          variables:
-            waitMinutes: $[ dependencies.check.outputs['window.waitMinutes'] ]
-          steps:
-            - task: ManualValidation@1
-              displayName: Outside business hours. Resume to deploy this run now
-              timeoutInMinutes: $(waitMinutes)
-              inputs:
-                notifyUsers: ethan.liu@vibrantsci.com
-                approvers: ethan.liu@vibrantsci.com
-                instructions: $(Build.BuildNumber) is waiting for the prod deploy window ($(windowDays) $(windowStart)-$(windowEnd) $(windowTimeZone)) and goes to prod by itself when it opens. Resume to deploy this run now; Reject to stop it. Other waiting runs are not affected.
-                onTimeout: resume
-
   # Emergency path: no test deploy and no soak, but a person must sign off on argo-poc-prod-emergency (always-on Approvals check),
   # and prod still runs e2e against the new version before switching. That environment's history lists every emergency release.
   - ${{ if parameters.emergency }}:
@@ -182,10 +112,8 @@ stages:
   - stage: Prod
     ${{ if parameters.emergency }}:
       dependsOn: Emergency
-    ${{ elseif parameters.ignoreBusinessHours }}:
-      dependsOn: Test
     ${{ else }}:
-      dependsOn: Window
+      dependsOn: Test
     condition: and(succeeded(), eq(variables.canDeploy, 'true'))
     # With an Exclusive lock check on argo-poc-prod, a newer run waiting for prod cancels older waiting runs.
     lockBehavior: runLatest
