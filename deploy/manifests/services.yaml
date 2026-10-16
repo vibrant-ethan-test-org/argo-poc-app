@@ -1,0 +1,31 @@
+# Blue-green needs two Services. Harness points the primary at the live color and the stage at the
+# new one, then swaps them after e2e passes against the stage Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{.Values.name}}
+  annotations:
+    harness.io/primary-service: "true"
+spec:
+  type: NodePort
+  selector:
+    app: {{.Values.name}}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: {{.Values.nodePort}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{.Values.name}}-stage
+  annotations:
+    harness.io/stage-service: "true"
+spec:
+  selector:
+    app: {{.Values.name}}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

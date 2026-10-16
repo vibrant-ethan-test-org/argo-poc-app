@@ -1,6 +1,6 @@
 // Command e2e runs end-to-end checks against a deployed argo-poc-app.
-// Argo Rollouts runs it as a Job against the preview Service before switching traffic.
-// It exits non-zero if any check fails, which aborts the rollout.
+// The Harness pipeline runs it as a pod against the stage Service before swapping traffic.
+// It exits non-zero if any check fails, which fails the stage and keeps the old version live.
 package main
 
 import (
@@ -28,11 +28,12 @@ func get(url string) (int, string, error) {
 func main() {
 	target := strings.TrimRight(os.Getenv("TARGET_URL"), "/")
 	expectedSHA := os.Getenv("EXPECTED_SHA")
+	expectedVersion := os.Getenv("EXPECTED_VERSION")
 	if target == "" {
 		fmt.Println("FAIL: TARGET_URL is not set")
 		os.Exit(2)
 	}
-	fmt.Printf("e2e against %s (expected commit %q)\n", target, expectedSHA)
+	fmt.Printf("e2e against %s (expected version %q, commit %q)\n", target, expectedVersion, expectedSHA)
 
 	checks := []struct {
 		name string
@@ -48,7 +49,7 @@ func main() {
 			}
 			return nil
 		}},
-		{"version matches the commit being deployed", func() error {
+		{"version matches the release being deployed", func() error {
 			code, body, err := get(target + "/version")
 			if err != nil {
 				return err
@@ -59,6 +60,9 @@ func main() {
 			var v struct{ Version, Commit string }
 			if err := json.Unmarshal([]byte(body), &v); err != nil {
 				return fmt.Errorf("bad JSON: %v", err)
+			}
+			if expectedVersion != "" && v.Version != expectedVersion {
+				return fmt.Errorf("version %q, want %q", v.Version, expectedVersion)
 			}
 			if expectedSHA != "" && v.Commit != expectedSHA {
 				return fmt.Errorf("commit %q, want %q", v.Commit, expectedSHA)

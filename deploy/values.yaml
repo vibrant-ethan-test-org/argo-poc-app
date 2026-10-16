@@ -1,0 +1,8 @@
+# Values for deploy/manifests. Harness resolves the <+...> expressions at deploy time:
+# the image and tag chosen for this release, and the environment being deployed to.
+name: argo-poc
+image: <+artifact.image>
+version: <+artifact.tag>
+env: <+env.identifier>
+replicas: 2
+nodePort: 30081
