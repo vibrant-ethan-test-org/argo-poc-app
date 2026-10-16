@@ -2,7 +2,7 @@
 # the image and tag chosen for this release, and the environment being deployed to.
 name: argo-poc
 image: <+artifact.image>
-version: <+artifact.tag>
+version: <+artifact.version>
 env: <+env.identifier>
 replicas: 2
 nodePort: 30081
