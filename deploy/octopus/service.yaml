@@ -1,0 +1,16 @@
+# The Service users hit. Octopus applies it after e2e passed against the new version, which moves
+# traffic to that version in one step.
+apiVersion: v1
+kind: Service
+metadata:
+  name: "#{App.Name}"
+spec:
+  type: NodePort
+  selector:
+    app: "#{App.Name}"
+    track: "#{App.Track}"
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: #{App.NodePort}

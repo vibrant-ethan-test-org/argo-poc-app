@@ -1,0 +1,55 @@
+# Octopus deploys every release as its own Deployment next to the live one and points the -stage
+# Service at it. e2e runs against -stage; only when it passes does service.yaml move the main
+# Service over. Octopus substitutes the #{...} variables before applying (App.* are project variables).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "#{App.Name}-#{App.Track}"
+  labels:
+    app: "#{App.Name}"
+    track: "#{App.Track}"
+spec:
+  replicas: #{App.Replicas}
+  selector:
+    matchLabels:
+      app: "#{App.Name}"
+      track: "#{App.Track}"
+  template:
+    metadata:
+      labels:
+        app: "#{App.Name}"
+        track: "#{App.Track}"
+      annotations:
+        app.version: "#{Octopus.Release.Number}"
+        octopus.deployment: "#{Octopus.Deployment.Id}"
+    spec:
+      containers:
+        - name: app
+          image: "#{App.Image}"
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: APP_ENV
+              value: "#{Octopus.Environment.Name}"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: "#{App.Name}-stage"
+spec:
+  selector:
+    app: "#{App.Name}"
+    track: "#{App.Track}"
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
