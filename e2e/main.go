@@ -15,6 +15,10 @@ import (
 
 var client = &http.Client{Timeout: 5 * time.Second}
 
+// failStage is set at build time from the E2E_FAIL build argument (-X main.failStage=<stage>). The promotion
+// controller's e2e tests use it to build a release whose e2e fails on purpose in that stage.
+var failStage string
+
 func get(url string) (int, string, error) {
 	resp, err := client.Get(url)
 	if err != nil {
@@ -66,6 +70,27 @@ func main() {
 			}
 			if expectedSHA != "" && v.Commit != expectedSHA {
 				return fmt.Errorf("commit %q, want %q", v.Commit, expectedSHA)
+			}
+			return nil
+		}},
+		{"build is not marked to fail in this stage", func() error {
+			if failStage == "" {
+				return nil
+			}
+			code, body, err := get(target + "/version")
+			if err != nil {
+				return err
+			}
+			if code != http.StatusOK {
+				return fmt.Errorf("status %d", code)
+			}
+			var v struct{ Env string }
+			if err := json.Unmarshal([]byte(body), &v); err != nil {
+				return fmt.Errorf("bad JSON: %v", err)
+			}
+			// Env is the stage namespace, <project>-<stage>.
+			if v.Env == failStage || strings.HasSuffix(v.Env, "-"+failStage) {
+				return fmt.Errorf("built with E2E_FAIL=%s, running in %s", failStage, v.Env)
 			}
 			return nil
 		}},
