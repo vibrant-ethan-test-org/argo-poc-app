@@ -3,6 +3,7 @@
 # pins the deploy/ manifests Harness uses to this commit, and the e2e image is pushed before the app
 # image so it exists when the pipeline starts.
 name: ci
+run-name: ${{ inputs.e2e_id && format('e2e {0}', inputs.e2e_id) || '' }}
 
 on:
   push:
@@ -12,6 +13,17 @@ on:
     branches: [main]
     paths-ignore: ["**.md"]
   workflow_dispatch:
+    # promotion-controller e2e tests (test/e2e there) build releases of main's commit with these.
+    inputs:
+      e2e_id:
+        description: Run id of a promotion-controller e2e test; shown in the run name so the test finds its run
+        required: false
+        default: ""
+      e2e_fail:
+        description: Stage whose e2e this build fails (E2E_FAIL), or none for a normal build
+        type: choice
+        options: [none, test, staging, prod]
+        default: none
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -28,7 +40,14 @@ jobs:
       contents: write # push the release tag
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      # Releases come only from main (the controller's lineage check, D-041): refuse a dispatch on any other ref
+      # before anything is tagged or pushed.
+      - name: Main only
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::dispatch only on main, not $GITHUB_REF"
+          exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Tag the commit
         if: github.event_name != 'pull_request'
         run: |
@@ -37,19 +56,21 @@ jobs:
       - name: Build timestamp
         id: timestamp
         run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: e2e image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: e2e
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            E2E_FAIL=${{ inputs.e2e_fail != 'none' && inputs.e2e_fail || '' }}
           tags: ${{ env.REGISTRY }}/argo-poc-e2e:${{ env.VERSION }}
           annotations: |
             index,manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -60,7 +81,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ steps.timestamp.outputs.created }}
       - name: app image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64

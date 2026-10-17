@@ -31,3 +31,7 @@ template and the AnalysisTemplate Job. Git does not select image tags. Each loca
 
 CI validates PR builds without publishing. Main pushes and explicit workflow dispatches retain the `v0.2.<run>`
 release tags and publish revision and creation annotations on the image index and platform manifests.
+
+The promotion controller's e2e tests (`test/e2e` there) create releases by dispatching this workflow on `main`.
+`e2e_id` names the run so a test finds it, and `e2e_fail=<stage>` builds a release whose e2e fails in that stage
+(the `E2E_FAIL` build argument).
