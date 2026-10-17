@@ -1,0 +1,12 @@
+# D-023 / F9: transformers propagate controller overrides into custom resources.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - rollout.yaml
+  - services.yaml
+  - analysis-e2e.yaml
+configurations:
+  - rollout-transform.yaml
+  - images-transform.yaml
+commonLabels:
+  app.kubernetes.io/name: argo-poc-web

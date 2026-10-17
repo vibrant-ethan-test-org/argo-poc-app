@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: argo-poc-web
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  # A release whose pods never become ready is aborted after 3 minutes.
+  progressDeadlineSeconds: 180
+  progressDeadlineAbort: true
+  selector:
+    matchLabels: {}   # the service's app.kubernetes.io/name label is added by its kustomization
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/vibrant-ethan-test-org/argo-poc-app
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: APP_ENV
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+  strategy:
+    blueGreen:
+      activeService: argo-poc-web-active   # live traffic (blue)
+      previewService: argo-poc-web-preview # new version under test (green)
+      autoPromotionEnabled: true  # switch as soon as e2e passes
+      scaleDownDelaySeconds: 30   # keep the old version briefly for fast rollback
+      prePromotionAnalysis:
+        templates:
+          - templateName: e2e
+        args:
+          - name: target-url
+            value: http://argo-poc-web-preview
+          - name: expected-sha
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.annotations['promotion.vibrantsci.com/commit']

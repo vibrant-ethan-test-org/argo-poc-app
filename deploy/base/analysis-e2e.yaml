@@ -1,0 +1,28 @@
+# Runs the service's e2e image against the preview Service before traffic switches.
+# A failed Job fails the analysis, which aborts the rollout and keeps the old version live.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: e2e
+spec:
+  args:
+    - name: target-url
+    - name: expected-sha
+  metrics:
+    - name: e2e
+      provider:
+        job:
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 120
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: e2e
+                    image: ghcr.io/vibrant-ethan-test-org/argo-poc-e2e
+                    env:
+                      - name: TARGET_URL
+                        value: "{{args.target-url}}"
+                      - name: EXPECTED_SHA
+                        value: "{{args.expected-sha}}"

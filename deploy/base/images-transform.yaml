@@ -1,0 +1,4 @@
+# Lets the Kustomize `images:` field set the e2e image inside the AnalysisTemplate Job.
+images:
+  - path: spec/metrics/provider/job/spec/template/spec/containers/image
+    kind: AnalysisTemplate

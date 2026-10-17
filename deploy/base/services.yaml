@@ -1,0 +1,25 @@
+# Argo Rollouts adds a pod-template-hash selector to each Service,
+# pointing argo-poc-web-active at the live version and argo-poc-web-preview at the new one.
+apiVersion: v1
+kind: Service
+metadata:
+  name: argo-poc-web-active
+spec:
+  type: ClusterIP
+  selector: {}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argo-poc-web-preview
+spec:
+  type: ClusterIP
+  selector: {}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
