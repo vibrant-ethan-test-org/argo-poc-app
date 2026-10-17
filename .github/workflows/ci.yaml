@@ -16,7 +16,7 @@ on:
     # promotion-controller e2e tests (test/e2e there) build releases of main's commit with these.
     inputs:
       e2e_id:
-        description: Run id of a promotion-controller e2e test; shown in the run name so the test finds its run
+        description: Run id of a promotion-controller e2e test ([A-Za-z0-9-]); shown in the run name so the test finds its run
         required: false
         default: ""
       e2e_fail:
@@ -32,6 +32,8 @@ concurrency:
 env:
   REGISTRY: ghcr.io/${{ github.repository_owner }}
   VERSION: v0.2.${{ github.run_number }}
+  # Images are pushed under this tag, which no project's tagPattern matches, and get VERSION together at the end.
+  TMP_TAG: tmp-${{ github.run_id }}
 
 jobs:
   release:
@@ -47,7 +49,21 @@ jobs:
         run: |
           echo "::error::dispatch only on main, not $GITHUB_REF"
           exit 1
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Dispatch inputs reach the run name and the build (E2E_FAIL): accept only known values.
+      - name: Inputs
+        id: inputs
+        env:
+          E2E_ID: ${{ inputs.e2e_id }}
+          E2E_FAIL: ${{ inputs.e2e_fail }}
+        run: |
+          [[ "$E2E_ID" =~ ^[A-Za-z0-9-]*$ ]] || { echo "::error::e2e_id must match [A-Za-z0-9-]*"; exit 1; }
+          case "$E2E_FAIL" in
+            ""|none) fail= ;;
+            test|staging|prod) fail=$E2E_FAIL ;;
+            *) echo "::error::e2e_fail must be none, test, staging or prod"; exit 1 ;;
+          esac
+          echo "e2e_fail=$fail" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Tag the commit
         if: github.event_name != 'pull_request'
         run: |
@@ -70,8 +86,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           build-args: |
-            E2E_FAIL=${{ inputs.e2e_fail != 'none' && inputs.e2e_fail || '' }}
-          tags: ${{ env.REGISTRY }}/argo-poc-e2e:${{ env.VERSION }}
+            E2E_FAIL=${{ steps.inputs.outputs.e2e_fail }}
+          tags: ${{ env.REGISTRY }}/argo-poc-e2e:${{ env.TMP_TAG }}
           annotations: |
             index,manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             index,manifest:org.opencontainers.image.revision=${{ github.sha }}
@@ -86,7 +102,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ env.REGISTRY }}/argo-poc-app:${{ env.VERSION }}
+          tags: ${{ env.REGISTRY }}/argo-poc-app:${{ env.TMP_TAG }}
           build-args: |
             VERSION=${{ env.VERSION }}
             COMMIT=${{ github.sha }}
@@ -100,3 +116,35 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.created=${{ steps.timestamp.outputs.created }}
+      # Release tags last, back to back, so a registry poller sees every image of the build at once: all of a commit's
+      # builds share its revision, and one image's new tag next to another's old one would look like a new set
+      # (promotion-controller T09, D-041). Each tag is a PUT of the exact manifest bytes pushed above, so the digest
+      # and the index annotations stay as built.
+      - name: Release tags
+        if: github.event_name != 'pull_request'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+          IMAGES: argo-poc-e2e argo-poc-app
+        run: |
+          accept=application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json
+          accept=$accept,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json
+          dir=$(mktemp -d)
+          declare -A bearer type
+          for image in $IMAGES; do
+            bearer[$image]=$(curl -fsS -u "$ACTOR:$TOKEN" \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:$OWNER/$image:pull,push" | jq -r .token)
+            echo "::add-mask::${bearer[$image]}"
+            curl -fsS -H "Authorization: Bearer ${bearer[$image]}" -H "Accept: $accept" -D "$dir/$image.h" -o "$dir/$image.m" \
+              "https://ghcr.io/v2/$OWNER/$image/manifests/$TMP_TAG"
+            type[$image]=$(tr -d '\r' < "$dir/$image.h" | awk -F': ' 'tolower($1) == "content-type" {print $2}')
+          done
+          # Every manifest is fetched first, so only the tag PUTs remain, one right after another.
+          for image in $IMAGES; do
+            digest=$(curl -fsS -X PUT -H "Authorization: Bearer ${bearer[$image]}" -H "Content-Type: ${type[$image]}" \
+              --data-binary "@$dir/$image.m" -D - -o /dev/null "https://ghcr.io/v2/$OWNER/$image/manifests/$VERSION" |
+              tr -d '\r' | awk -F': ' 'tolower($1) == "docker-content-digest" {print $2}')
+            [[ "$digest" == "sha256:$(sha256sum < "$dir/$image.m" | cut -d' ' -f1)" ]] || { echo "::error::$image: digest changed"; exit 1; }
+            echo "$image:$VERSION -> $digest"
+          done

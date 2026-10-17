@@ -35,3 +35,5 @@ release tags and publish revision and creation annotations on the image index an
 The promotion controller's e2e tests (`test/e2e` there) create releases by dispatching this workflow on `main`.
 `e2e_id` names the run so a test finds it, and `e2e_fail=<stage>` builds a release whose e2e fails in that stage
 (the `E2E_FAIL` build argument).
+Images are pushed under a `tmp-<run id>` tag first and get their `v0.2.<run>` release tag together at the end of
+the run, so a registry poller never sees one image of a build without the others.
