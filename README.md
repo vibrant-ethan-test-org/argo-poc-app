@@ -35,5 +35,8 @@ release tags and publish revision and creation annotations on the image index an
 The promotion controller's e2e tests (`test/e2e` there) create releases by dispatching this workflow on `main`.
 `e2e_id` names the run so a test finds it, and `e2e_fail=<stage>` builds a release whose e2e fails in that stage
 (the `E2E_FAIL` build argument).
-Images are pushed untagged, by digest, and get their `v0.2.<run>` release tag together at the end of the run, so a
-registry poller never sees one image of a build without the others.
+Images are pushed untagged, by digest. Once every image is built, their `v0.2.<run>` release tags are set back to
+back at the end of the run. That keeps the window in which a registry poller can see one image of a build without the
+others as short as possible, but doesn't close it: a release can still be assembled from a mix of builds inside that
+window (promotion-controller D-057). If one image's tag still fails after its retries while another's was set, the
+run fails with an explicit "release tag … is partial" error naming the images that were tagged.

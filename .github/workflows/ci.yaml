@@ -116,9 +116,10 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.created=${{ steps.timestamp.outputs.created }}
-      # Release tags last, back to back, so a registry poller sees every image of the build at once: all of a commit's
-      # builds share its revision, and one image's new tag next to another's old one would look like a new set
-      # (promotion-controller T09, D-041). The images were pushed untagged; each tag is a PUT of the exact manifest
+      # Release tags last, back to back, to keep the window in which a registry poller sees only some of the build's
+      # images as short as possible; it isn't zero (D-057). All of a commit's builds share its revision, and one
+      # image's new tag next to another's old one would look like a new set (promotion-controller T09, D-041).
+      # The images were pushed untagged; each tag is a PUT of the exact manifest
       # the build step reported, fetched by digest, so the digest and the index annotations stay as built.
       - name: Release tags
         if: github.event_name != 'pull_request'
