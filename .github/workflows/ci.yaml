@@ -19,6 +19,10 @@ on:
         description: Run id of a promotion-controller e2e test ([A-Za-z0-9-]); shown in the run name so the test finds its run
         required: false
         default: ""
+      source_commit:
+        description: Optional full commit SHA reachable from main (controller revert acceptance)
+        required: false
+        default: ""
       e2e_fail:
         description: Stage whose e2e this build fails (E2E_FAIL), or none for a normal build
         type: choice
@@ -59,7 +63,9 @@ jobs:
           E2E_ID: ${{ inputs.e2e_id }}
           E2E_FAIL: ${{ inputs.e2e_fail }}
           UNHEALTHY_AFTER: ${{ inputs.unhealthy_after }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
+          [[ -z "$SOURCE_COMMIT" || "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::source_commit must be a full lowercase commit SHA"; exit 1; }
           [[ "$E2E_ID" =~ ^[A-Za-z0-9-]*$ ]] || { echo "::error::e2e_id must match [A-Za-z0-9-]*"; exit 1; }
           case "$E2E_FAIL" in
             ""|none) fail= ;;
@@ -74,6 +80,18 @@ jobs:
           esac
           echo "unhealthy_after=$unhealthy" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Select source commit
+        id: source
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          if [[ -n "$SOURCE_COMMIT" ]]; then
+            git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main || { echo "::error::source_commit must be reachable from main"; exit 1; }
+            git checkout --detach "$SOURCE_COMMIT"
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Tag the commit
         if: github.event_name != 'pull_request'
         run: |
@@ -101,11 +119,11 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/argo-poc-e2e,push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           annotations: |
             index,manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            index,manifest:org.opencontainers.image.revision=${{ github.sha }}
+            index,manifest:org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
             index,manifest:org.opencontainers.image.created=${{ steps.timestamp.outputs.created }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
             org.opencontainers.image.created=${{ steps.timestamp.outputs.created }}
       - name: app image
         id: app_build
@@ -117,16 +135,16 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/argo-poc-app,push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           build-args: |
             VERSION=${{ env.VERSION }}
-            COMMIT=${{ github.sha }}
+            COMMIT=${{ steps.source.outputs.commit }}
             UNHEALTHY_AFTER=${{ steps.inputs.outputs.unhealthy_after }}
           annotations: |
             index,manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            index,manifest:org.opencontainers.image.revision=${{ github.sha }}
+            index,manifest:org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
             index,manifest:org.opencontainers.image.version=${{ env.VERSION }}
             index,manifest:org.opencontainers.image.created=${{ steps.timestamp.outputs.created }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.created=${{ steps.timestamp.outputs.created }}
       # Release tags last, back to back, to keep the window in which a registry poller sees only some of the build's

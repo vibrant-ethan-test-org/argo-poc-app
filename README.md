@@ -42,3 +42,5 @@ window (promotion-controller D-057). If one image's tag still fails after its re
 run fails with an explicit "release tag … is partial" error naming the images that were tagged.
 
 Controller acceptance builds may use the `ci.yaml` workflow dispatch input `unhealthy_after=20s`. It sets `UNHEALTHY_AFTER` in the application image: only staging namespaces lose `/healthz` readiness after 20 seconds, allowing the controller to exercise a failed bake and rollback. The default keeps every stage healthy.
+
+The dispatch-only `source_commit` input may pin a full lowercase commit SHA reachable from `main`, for reproducible revert acceptance builds. The workflow verifies ancestry before checkout; binary commit values, release tags and OCI revision annotations all identify that selected commit. Empty uses the checked-out main commit.
