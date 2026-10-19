@@ -1,0 +1,113 @@
+# Shared release-descriptor publisher (docs/design/23-release-descriptors.md §23.4, D-072). Callers pin it by full
+# commit SHA. It builds the publisher from this repository's source at that SHA (or from the verified vendored copy's
+# src/), then publishes the run's descriptor and commits it to the descriptor repository's journal.
+#
+# Inputs reach the publisher only through step environment variables, never shell text or process arguments. The
+# trusted run context comes from the `github` context below, so a caller's `with:` or job env cannot change it.
+name: release-descriptor
+description: Publish a validated release descriptor and commit it to the project's publication journal.
+inputs:
+  pipeline-file:
+    description: Repository-relative pipeline file, read from the exact source commit.
+    default: deploy/pipeline.yaml
+  build-outputs-file:
+    description: The build-output JSON file of this run (at most 64 KiB).
+    required: true
+  descriptor-registry:
+    description: Optional; must equal the pipeline's source.descriptor.registry.
+    default: ""
+  descriptor-repository:
+    description: Optional; must equal the pipeline's source.descriptor.repository.
+    default: ""
+  credential-file:
+    description: Optional regular file holding the registry password or token; the job token is used when empty.
+    default: ""
+  initialize-journal:
+    description: Explicitly write journal sequence 0 when the head is missing and no entry exists.
+    default: "false"
+  state-dir:
+    description: Directory for the prepared-publication record; defaults under RUNNER_TEMP.
+    default: ""
+outputs:
+  descriptor-ref:
+    description: Digest-pinned descriptor reference.
+    value: ${{ steps.publish.outputs.descriptor-ref }}
+  descriptor-digest:
+    description: Canonical descriptor manifest digest.
+    value: ${{ steps.publish.outputs.descriptor-digest }}
+  payload-digest:
+    description: Release payload digest.
+    value: ${{ steps.publish.outputs.payload-digest }}
+  published-at:
+    description: Successful head-write time (UTC RFC 3339 seconds).
+    value: ${{ steps.publish.outputs.published-at }}
+  journal-sequence:
+    description: Journal sequence of this publication.
+    value: ${{ steps.publish.outputs.journal-sequence }}
+  journal-entry-digest:
+    description: Journal entry manifest digest.
+    value: ${{ steps.publish.outputs.journal-entry-digest }}
+  duplicate-publication:
+    description: true when this run's publication was already committed and nothing was appended.
+    value: ${{ steps.publish.outputs.duplicate-publication }}
+runs:
+  using: composite
+  steps:
+    - name: Locate publisher source
+      id: source
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -f "$GITHUB_ACTION_PATH/src/go.mod" ]]; then
+          dir="$GITHUB_ACTION_PATH/src"
+        else
+          dir=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd -P)
+        fi
+        [[ -f "$dir/go.mod" && "$dir" != *$'\n'* ]] || { echo "::error::release-descriptor: inputInvalid (source)"; exit 1; }
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: ${{ steps.source.outputs.dir }}/go.mod
+        cache: false
+    - name: Build publisher
+      shell: bash
+      env:
+        SRC: ${{ steps.source.outputs.dir }}
+        GOFLAGS: -mod=readonly -trimpath
+        GOTOOLCHAIN: local
+        GONOSUMDB: ""
+        GONOPROXY: ""
+        GOPRIVATE: ""
+        GOINSECURE: ""
+        GOSUMDB: sum.golang.org
+        GOPROXY: https://proxy.golang.org,direct
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/pc-release-descriptor"
+        cd "$SRC"
+        go build -o "$RUNNER_TEMP/pc-release-descriptor/publisher" ./cmd/release-descriptor
+    - name: Publish
+      id: publish
+      shell: bash
+      env:
+        PC_PIPELINE_FILE: ${{ inputs.pipeline-file }}
+        PC_BUILD_OUTPUTS_FILE: ${{ inputs.build-outputs-file }}
+        PC_DESCRIPTOR_REGISTRY: ${{ inputs.descriptor-registry }}
+        PC_DESCRIPTOR_REPOSITORY: ${{ inputs.descriptor-repository }}
+        PC_CREDENTIAL_FILE: ${{ inputs.credential-file }}
+        PC_INITIALIZE_JOURNAL: ${{ inputs.initialize-journal }}
+        PC_STATE_DIR: ${{ inputs.state-dir }}
+        PC_JOB_TOKEN: ${{ github.token }}
+        PC_CTX_ACTIONS: "true"
+        PC_CTX_SERVER_URL: ${{ github.server_url }}
+        PC_CTX_REPOSITORY: ${{ github.repository }}
+        PC_CTX_SHA: ${{ github.sha }}
+        PC_CTX_REF: ${{ github.ref }}
+        PC_CTX_REF_TYPE: ${{ github.ref_type }}
+        PC_CTX_EVENT_NAME: ${{ github.event_name }}
+        PC_CTX_WORKFLOW_REF: ${{ github.workflow_ref }}
+        PC_CTX_RUN_ID: ${{ github.run_id }}
+        PC_CTX_RUN_ATTEMPT: ${{ github.run_attempt }}
+        PC_CTX_WORKSPACE: ${{ github.workspace }}
+        PC_CTX_ACTOR: ${{ github.actor }}
+      run: '"$RUNNER_TEMP/pc-release-descriptor/publisher"'

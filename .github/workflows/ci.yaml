@@ -1,7 +1,9 @@
-# Build and push the images. That is all CI does: Harness sees the new argo-poc-app tag in GHCR and
+# Build and push the images. Harness sees the new argo-poc-app tag in GHCR and
 # runs the release pipeline (test with blue-green + e2e, approval, prod). The git tag of the same name
 # pins the deploy/ manifests Harness uses to this commit, and the e2e image is pushed before the app
 # image so it exists when the pipeline starts.
+# On main, the descriptor job then publishes the build's release descriptor for the promotion controller
+# (promotion-controller D-072) through the vendored, hash-checked shared action in .github/actions/release-descriptor.
 name: ci
 run-name: ${{ inputs.e2e_id && format('e2e {0}', inputs.e2e_id) || '' }}
 
@@ -33,6 +35,11 @@ on:
         type: choice
         options: [none, 20s]
         default: none
+      initialize_journal:
+        description: Write the release-descriptor journal's sequence 0 when it has no head (once, D-072)
+        type: choice
+        options: ["false", "true"]
+        default: "false"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -45,6 +52,13 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ env.VERSION }}
+      e2e_digest: ${{ steps.e2e_build.outputs.digest }}
+      e2e_completed_at: ${{ steps.e2e_build_done.outputs.at }}
+      app_digest: ${{ steps.app_build.outputs.digest }}
+      app_completed_at: ${{ steps.app_build_done.outputs.at }}
     permissions:
       contents: write # push the release tag
       packages: write
@@ -125,6 +139,9 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
             org.opencontainers.image.created=${{ steps.timestamp.outputs.created }}
+      - name: e2e build completed
+        id: e2e_build_done
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: app image
         id: app_build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -147,6 +164,9 @@ jobs:
             org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.created=${{ steps.timestamp.outputs.created }}
+      - name: app build completed
+        id: app_build_done
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       # Release tags last, back to back, to keep the window in which a registry poller sees only some of the build's
       # images as short as possible; it isn't zero (D-057). All of a commit's builds share its revision, and one
       # image's new tag next to another's old one would look like a new set (promotion-controller T09, D-041).
@@ -197,3 +217,51 @@ jobs:
             tagged="$tagged $image"
             echo "$image:$VERSION -> $got"
           done
+
+  # Publishes this run's release descriptor (promotion-controller D-072, docs/design/23-release-descriptors.md §23.4)
+  # through the vendored copy of the shared action, after checking its recorded hashes. It runs only when every image
+  # job succeeded on main, takes digests from those jobs' outputs and never resolves a tag. It has no deployment
+  # credentials: only the job token, scoped to this repository's packages.
+  descriptor:
+    needs: release
+    # A source_commit build is of an older commit than this run's GITHUB_SHA, which the publisher refuses.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !inputs.source_commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: release-descriptor-argo-poc-web
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify the vendored action
+        working-directory: .github/actions/release-descriptor
+        run: |
+          set -euo pipefail
+          [[ -z "$(find . ! -type f ! -type d)" ]] || { echo "::error::vendored action: unexpected file type"; exit 1; }
+          diff <(find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort) \
+            <(grep -v '^#' SHA256SUMS | sed -E 's/^[0-9a-f]{64}  //' | LC_ALL=C sort) ||
+            { echo "::error::vendored action: file set differs from SHA256SUMS"; exit 1; }
+          grep -v '^#' SHA256SUMS | sha256sum --strict --check --quiet
+      - name: Collect build outputs
+        env:
+          COMMIT: ${{ needs.release.outputs.commit }}
+          VERSION: ${{ needs.release.outputs.version }}
+          E2E_DIGEST: ${{ needs.release.outputs.e2e_digest }}
+          E2E_COMPLETED_AT: ${{ needs.release.outputs.e2e_completed_at }}
+          APP_DIGEST: ${{ needs.release.outputs.app_digest }}
+          APP_COMPLETED_AT: ${{ needs.release.outputs.app_completed_at }}
+        run: |
+          set -euo pipefail
+          workflow=${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}
+          jq -n --arg repository "$GITHUB_REPOSITORY" --arg commit "$COMMIT" --arg workflow "${workflow%%@*}" \
+            --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" --arg version "$VERSION" \
+            --arg owner "$GITHUB_REPOSITORY_OWNER" '{schemaVersion: 1, run: {repository: $repository, commit: $commit, workflow: $workflow, runId: $runId, runAttempt: $runAttempt}, version: $version, images: [{image: ("ghcr.io/" + $owner + "/argo-poc-app"), tag: $version, digest: env.APP_DIGEST, commit: $commit, completedAt: env.APP_COMPLETED_AT, result: "success"}, {image: ("ghcr.io/" + $owner + "/argo-poc-e2e"), tag: $version, digest: env.E2E_DIGEST, commit: $commit, completedAt: env.E2E_COMPLETED_AT, result: "success"}]}' > "$RUNNER_TEMP/build-outputs.json"
+      - uses: ./.github/actions/release-descriptor
+        with:
+          build-outputs-file: ${{ runner.temp }}/build-outputs.json
+          initialize-journal: ${{ inputs.initialize_journal == 'true' }}
