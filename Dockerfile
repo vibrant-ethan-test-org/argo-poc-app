@@ -5,8 +5,9 @@ WORKDIR /src
 COPY src/ .
 ARG VERSION=dev
 ARG COMMIT=unknown
+ARG UNHEALTHY_AFTER=
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
-    -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" -o /app .
+    -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.unhealthyAfter=${UNHEALTHY_AFTER}" -o /app .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /app /app

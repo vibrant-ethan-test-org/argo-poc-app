@@ -40,3 +40,5 @@ back at the end of the run. That keeps the window in which a registry poller can
 others as short as possible, but doesn't close it: a release can still be assembled from a mix of builds inside that
 window (promotion-controller D-057). If one image's tag still fails after its retries while another's was set, the
 run fails with an explicit "release tag … is partial" error naming the images that were tagged.
+
+Controller acceptance builds may use the `ci.yaml` workflow dispatch input `unhealthy_after=20s`. It sets `UNHEALTHY_AFTER` in the application image: only staging namespaces lose `/healthz` readiness after 20 seconds, allowing the controller to exercise a failed bake and rollback. The default keeps every stage healthy.

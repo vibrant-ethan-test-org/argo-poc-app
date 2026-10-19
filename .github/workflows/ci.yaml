@@ -24,6 +24,11 @@ on:
         type: choice
         options: [none, test, staging, prod]
         default: none
+      unhealthy_after:
+        description: Make staging readiness fail after this duration (controller UC5)
+        type: choice
+        options: [none, 20s]
+        default: none
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -53,6 +58,7 @@ jobs:
         env:
           E2E_ID: ${{ inputs.e2e_id }}
           E2E_FAIL: ${{ inputs.e2e_fail }}
+          UNHEALTHY_AFTER: ${{ inputs.unhealthy_after }}
         run: |
           [[ "$E2E_ID" =~ ^[A-Za-z0-9-]*$ ]] || { echo "::error::e2e_id must match [A-Za-z0-9-]*"; exit 1; }
           case "$E2E_FAIL" in
@@ -61,6 +67,12 @@ jobs:
             *) echo "::error::e2e_fail must be none, test, staging or prod"; exit 1 ;;
           esac
           echo "e2e_fail=$fail" >> "$GITHUB_OUTPUT"
+          case "$UNHEALTHY_AFTER" in
+            ""|none) unhealthy= ;;
+            20s) unhealthy=20s ;;
+            *) echo "::error::unhealthy_after must be none or 20s"; exit 1 ;;
+          esac
+          echo "unhealthy_after=$unhealthy" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Tag the commit
         if: github.event_name != 'pull_request'
@@ -106,6 +118,7 @@ jobs:
           build-args: |
             VERSION=${{ env.VERSION }}
             COMMIT=${{ github.sha }}
+            UNHEALTHY_AFTER=${{ steps.inputs.outputs.unhealthy_after }}
           annotations: |
             index,manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             index,manifest:org.opencontainers.image.revision=${{ github.sha }}

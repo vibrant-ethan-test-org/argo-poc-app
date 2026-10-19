@@ -5,18 +5,20 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"hash/fnv"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.commit=...".
 var (
-	version = "dev"
-	commit  = "unknown"
+	version        = "dev"
+	commit         = "unknown"
+	unhealthyAfter = "" // UNHEALTHY_AFTER build flag, staging only (controller acceptance UC5).
 )
 
 var page = template.Must(template.New("page").Parse(`<!doctype html>
@@ -46,6 +48,11 @@ func main() {
 	env := os.Getenv("APP_ENV")
 	pod, _ := os.Hostname()
 
+	started := time.Now()
+	delay, err := time.ParseDuration(unhealthyAfter)
+	if unhealthyAfter != "" && (err != nil || delay <= 0 || delay > time.Hour) {
+		log.Fatal("invalid UNHEALTHY_AFTER")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		data := map[string]any{"Version": version, "Commit": commit, "Env": env, "Pod": pod, "Hue": hue(version)}
@@ -53,9 +60,7 @@ func main() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "ok")
-	})
+	mux.HandleFunc("GET /healthz", healthHandler(env, delay, started))
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"version": version, "commit": commit, "env": env})
@@ -63,4 +68,15 @@ func main() {
 
 	log.Printf("argo-poc %s (%s) listening on :8080", version, commit)
 	log.Fatal(http.ListenAndServe(":8080", mux))
+}
+
+// Staging loses readiness during its bake; test and prod remain healthy with the same image.
+func healthHandler(env string, delay time.Duration, started time.Time) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if delay > 0 && strings.HasSuffix(env, "-staging") && time.Since(started) >= delay {
+			http.Error(w, "fixture unhealthy", http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte("ok\n"))
+	}
 }
