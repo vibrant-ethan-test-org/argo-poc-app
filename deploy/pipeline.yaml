@@ -9,9 +9,15 @@ source:
   branch: main
   images:
     - image: ghcr.io/vibrant-ethan-test-org/argo-poc-app
+      registry: ghcr
       tagPattern: '^v\d+\.\d+\.\d+$'
     - image: ghcr.io/vibrant-ethan-test-org/argo-poc-e2e
+      registry: ghcr
       tagPattern: '^v\d+\.\d+\.\d+$'
+  # D-072: CI publishes a release descriptor here (.github/workflows/ci.yaml, job descriptor).
+  descriptor:
+    registry: ghcr
+    repository: vibrant-ethan-test-org/argo-poc-web-releases
 stages:
   - name: test
     deploy: {argocd: {app: argo-poc-web-test}}
