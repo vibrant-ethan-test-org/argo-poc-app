@@ -34,6 +34,9 @@ on:
         options: [none, 20s]
         default: none
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: false
@@ -43,19 +46,44 @@ env:
   VERSION: v0.2.${{ github.run_number }}
 
 jobs:
+  pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache: false
+      - name: Tests
+        run: |
+          (cd src && go test -race ./...)
+          (cd e2e && go test -race ./...)
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: e2e
+          platforms: linux/amd64,linux/arm64
+          outputs: type=cacheonly
+          push: false
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=cacheonly
+          push: false
   release:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the release tag
       packages: write
     steps:
-      # Releases come only from main (the controller's lineage check, D-041): refuse a dispatch on any other ref
-      # before anything is tagged or pushed.
-      - name: Main only
-        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
-        run: |
-          echo "::error::dispatch only on main, not $GITHUB_REF"
-          exit 1
       # Dispatch inputs reach the run name and the build (E2E_FAIL): accept only known values.
       - name: Inputs
         id: inputs
@@ -93,7 +121,7 @@ jobs:
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Tag the commit
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         run: |
           git tag "$VERSION"
           git push origin "$VERSION"
@@ -102,7 +130,7 @@ jobs:
         run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -116,7 +144,7 @@ jobs:
           build-args: |
             E2E_FAIL=${{ steps.inputs.outputs.e2e_fail }}
           # Pushed by digest, untagged; the Release tags step tags it VERSION.
-          outputs: type=image,name=${{ env.REGISTRY }}/argo-poc-e2e,push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          outputs: type=image,name=${{ env.REGISTRY }}/argo-poc-e2e,push-by-digest=true,name-canonical=true,push=${{ github.ref == 'refs/heads/main' }}
           annotations: |
             index,manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             index,manifest:org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
@@ -132,7 +160,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           # Pushed by digest, untagged; the Release tags step tags it VERSION.
-          outputs: type=image,name=${{ env.REGISTRY }}/argo-poc-app,push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          outputs: type=image,name=${{ env.REGISTRY }}/argo-poc-app,push-by-digest=true,name-canonical=true,push=${{ github.ref == 'refs/heads/main' }}
           build-args: |
             VERSION=${{ env.VERSION }}
             COMMIT=${{ steps.source.outputs.commit }}
@@ -153,7 +181,7 @@ jobs:
       # The images were pushed untagged; each tag is a PUT of the exact manifest
       # the build step reported, fetched by digest, so the digest and the index annotations stay as built.
       - name: Release tags
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
