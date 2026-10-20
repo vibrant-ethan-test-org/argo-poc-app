@@ -44,3 +44,18 @@ run fails with an explicit "release tag … is partial" error naming the images 
 Controller acceptance builds may use the `ci.yaml` workflow dispatch input `unhealthy_after=20s`. It sets `UNHEALTHY_AFTER` in the application image: only staging namespaces lose `/healthz` readiness after 20 seconds, allowing the controller to exercise a failed bake and rollback. The default keeps every stage healthy.
 
 The dispatch-only `source_commit` input may pin a full lowercase commit SHA reachable from `main`, for reproducible revert acceptance builds. The workflow verifies ancestry before checkout; binary commit values, release tags and OCI revision annotations all identify that selected commit. Empty uses the checked-out main commit.
+
+## CI permissions and e2e commit checks (F32)
+
+The `pr` job runs Go tests and builds both architectures without pushing images or tags. It has only
+`contents: read`; checkout uses `persist-credentials: false`. Every action is pinned to a full commit SHA
+with a version comment. The separate `release` job can run only for `refs/heads/main` on push or workflow
+dispatch, and is the only job with contents/package write permissions. Dispatching a branch publishes nothing.
+
+The controller still dispatches `.github/workflows/ci.yaml` on `main`, using `e2e_id`, `e2e_fail`,
+`unhealthy_after` and optional `source_commit`. Release tags remain `v0.2.<run_number>`, and image index/manifest
+revision, source and creation annotations retain their existing meanings. Image-push step names are unchanged
+because the controller reads their completion timestamps.
+
+The AnalysisTemplate supplies `EXPECTED_SHA` from `promotion.vibrantsci.com/commit`. An empty value fails
+immediately with `FAIL: EXPECTED_SHA is required`; it can no longer disable the deployed commit check.

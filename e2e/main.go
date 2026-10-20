@@ -37,6 +37,11 @@ func main() {
 		fmt.Println("FAIL: TARGET_URL is not set")
 		os.Exit(2)
 	}
+	// F32: a missing controller commit annotation must fail closed.
+	if expectedSHA == "" {
+		fmt.Println("FAIL: EXPECTED_SHA is required")
+		os.Exit(2)
+	}
 	fmt.Printf("e2e against %s (expected version %q, commit %q)\n", target, expectedVersion, expectedSHA)
 
 	checks := []struct {
@@ -68,7 +73,7 @@ func main() {
 			if expectedVersion != "" && v.Version != expectedVersion {
 				return fmt.Errorf("version %q, want %q", v.Version, expectedVersion)
 			}
-			if expectedSHA != "" && v.Commit != expectedSHA {
+			if v.Commit != expectedSHA {
 				return fmt.Errorf("commit %q, want %q", v.Commit, expectedSHA)
 			}
 			return nil
